@@ -31,6 +31,24 @@ class ClickableBlock extends FinalBlock {
 	}
 }
 
+/** Block that toggles its own presentation on a pointer click. */
+class ToggleBlock implements Component {
+	toggles = 0;
+	constructor(private readonly rows: readonly string[]) {}
+
+	isTranscriptBlockFinalized(): boolean {
+		return true;
+	}
+
+	render(_width: number): readonly string[] {
+		return this.rows;
+	}
+
+	handleTranscriptClick(): void {
+		this.toggles += 1;
+	}
+}
+
 function buildComposer(columns = 60, rows = 14): { composer: Composer; term: VirtualTerminal } {
 	const term = new VirtualTerminal(columns, rows);
 	const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
@@ -200,6 +218,31 @@ describe("composer fullscreen main view", () => {
 			expect(cardRow).toBeGreaterThanOrEqual(0);
 			expect(composer.viewportClickCandidates(cardRow)).toEqual(["AgentA"]);
 			expect(composer.viewportClickCandidates(cardRow + 1)).toEqual(["AgentA"]);
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("dispatches clicks to component-owned targets in fullscreen", () => {
+		const { composer } = buildComposer();
+		try {
+			const toggle = new ToggleBlock(["card one", "card two"]);
+			const transcript = new TranscriptContainer();
+			transcript.addChild(toggle);
+			for (let index = 0; index < 8; index++) {
+				transcript.addChild(new FinalBlock([`row ${index} a`, `row ${index} b`]));
+			}
+			composer.setRuntimeChildren([transcript]);
+			composer.setFullscreen(true);
+			composer.renderFrame({ columns: 60, rows: 14 });
+			composer.scrollTranscript(Number.MAX_SAFE_INTEGER);
+
+			const rows = plainRows(composer.renderFrame({ columns: 60, rows: 14 }).viewport);
+			const cardRow = rows.findIndex(row => row.includes("card one"));
+			expect(cardRow).toBeGreaterThanOrEqual(0);
+			expect(composer.viewportClickCandidates(cardRow)).toHaveLength(1);
+			expect(composer.clickViewportTarget(cardRow)).toBe(true);
+			expect(toggle.toggles).toBe(1);
 		} finally {
 			composer.stop();
 		}

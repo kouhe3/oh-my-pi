@@ -1,5 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -108,6 +110,81 @@ describe("tui.screen fullscreen main view", () => {
 		settings.set("tui.screen", "inline");
 		controller.handleSettingChange("tui.screen", "inline");
 		expect(mode.composer.fullscreen).toBe(false);
+	});
+
+	const HINT = "earlier lines, showing";
+
+	/** Terminal screen text with styling stripped. */
+	function screenText(): string {
+		return Bun.stripANSI(term.getViewport().join("\n"));
+	}
+
+	/** Add a bash card whose output collapses behind an expansion hint. */
+	async function addLongToolCard(): Promise<void> {
+		const card = new ToolExecutionComponent(
+			"bash",
+			{ command: "seq 1 200" },
+			{},
+			{} as AgentTool,
+			mode.ui,
+			tempDir.path(),
+		);
+		mode.chatContainer.addChild(card);
+		card.updateResult(
+			{
+				content: [{ type: "text", text: Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\n") }],
+				details: {},
+			},
+			false,
+		);
+		await term.waitForRender(() => screenText().includes(HINT));
+	}
+
+	/** Press the left button on the card's hint row: the whole card is the target. */
+	function clickCard(): void {
+		const hintRow = screenText()
+			.split("\n")
+			.findIndex(row => row.includes(HINT));
+		expect(hintRow).toBeGreaterThanOrEqual(0);
+		term.sendInput(`\x1b[<0;5;${hintRow + 1}M`);
+	}
+
+	it("expands a tool card when its rows are clicked in fullscreen", async () => {
+		settings.set("tui.screen", "fullscreen");
+		settings.set("tui.mouse", false);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		await addLongToolCard();
+		clickCard();
+		await term.waitForRender(() => !screenText().includes(HINT));
+	});
+
+	it("expands a tool card on a pointer click inline while tui.mouse is on", async () => {
+		settings.set("tui.screen", "inline");
+		settings.set("tui.mouse", true);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		await addLongToolCard();
+		clickCard();
+		await term.waitForRender(() => !screenText().includes(HINT));
+	});
+
+	it("ignores pointer clicks inline while tui.mouse is off", async () => {
+		settings.set("tui.screen", "inline");
+		settings.set("tui.mouse", false);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		await addLongToolCard();
+		clickCard();
+		mode.ui.requestRender();
+		await term.waitForRender();
+		expect(screenText()).toContain(HINT);
 	});
 
 	it("toggles the view with the app.screen.toggle chord", async () => {

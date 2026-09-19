@@ -2,8 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
 
-const CLICK_TRACKING = "\x1b[?1000h\x1b[?1006h";
-const MOTION_TRACKING = "\x1b[?1003h";
+const TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 
 /** Minimal terminal that captures every escape byte the engine writes. */
@@ -127,18 +126,24 @@ describe("persistent alt-screen main view", () => {
 		expect(tui.getMutableViewport()).toEqual({ top: 0, length: 6 });
 	});
 
-	it("reports clicks and wheel without motion, and adds hover motion only for the inline provider", () => {
+	it("reports wheel, clicks, and hover motion in fullscreen without the inline provider", () => {
 		const { terminal, tui } = setup({ viewport: ["live row"] }, true);
 		tui.start();
 
-		expect(terminal.text()).toContain(CLICK_TRACKING);
-		expect(terminal.text()).not.toContain(MOTION_TRACKING);
+		// The fullscreen main view owns the pointer for the session, so hover and
+		// clicks do not wait for `tui.mouse`.
+		expect(terminal.text()).toContain(TRACKING_ON);
+	});
+
+	it("leaves normal-buffer reporting opt-in while inline", () => {
+		const { terminal, tui } = setup({ viewport: ["live row"] });
+		tui.start();
+		expect(terminal.text()).not.toContain(TRACKING_ON);
 
 		tui.setInlineMouseTrackingProvider(() => true);
 		terminal.writes.length = 0;
 		tui.requestRender(true);
-		expect(terminal.text()).toContain(MOTION_TRACKING);
-		expect(terminal.text()).not.toContain(CLICK_TRACKING);
+		expect(terminal.text()).toContain(TRACKING_ON);
 	});
 
 	it("leaves the alternate screen and commits history again when disabled", () => {
@@ -161,5 +166,20 @@ describe("persistent alt-screen main view", () => {
 		expect(terminal.text()).toContain("retired again");
 		expect(terminal.text()).toContain("live again");
 		expect(tui.getMutableViewport().top).toBeGreaterThan(0);
+	});
+
+	it("rewrites only the rows a repaint moved", () => {
+		const { terminal, provider, tui } = setup({ viewport: ["row one", "row two", "row three"] }, true);
+		tui.start();
+		expect(terminal.text()).toContain("row one");
+
+		// One row changes: a scroll-frame diff must not re-emit the untouched rows.
+		terminal.writes.length = 0;
+		provider.plan = { viewport: ["row one", "row two", "row three changed"] };
+		tui.requestRender();
+		const repaint = terminal.text();
+		expect(repaint).toContain("row three changed");
+		expect(repaint).not.toContain("row one");
+		expect(repaint).not.toContain("row two");
 	});
 });

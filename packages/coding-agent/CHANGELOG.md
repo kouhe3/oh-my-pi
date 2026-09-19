@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `tui.screen: fullscreen`: run the main session view on the alternate screen with an in-app transcript scrollback — the wheel, PageUp/PageDown, and Home/End scroll it — and `Alt+F` (`app.screen.toggle`) to switch views without restarting.
+- Added `tui.screen: fullscreen`: run the main session view on the alternate screen with an in-app transcript scrollback — the wheel, PageUp/PageDown, and Home/End scroll it — and `Alt+F` (`app.screen.toggle`) to switch views without restarting. The fullscreen view always reports the wheel, clicks, and hover, so live cards stay interactive without `tui.mouse`.
 
 ## [18.2.6] - 2026-09-18
 

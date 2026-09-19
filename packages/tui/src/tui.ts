@@ -94,16 +94,8 @@ const PAINT_END_NO_SYNC = ENABLE_AUTOWRAP;
 // native text selection.
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
-/**
- * Click + wheel reporting without any-motion: the persistent alt main view needs
- * button and wheel events to scroll, but hover reporting (?1003) stays tied to
- * `tui.mouse` so a scrollback-free reader keeps a quiet input stream.
- */
-const MOUSE_TRACKING_BUTTONS_ON = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_MOTION_ON = "\x1b[?1003h";
-const MOUSE_MOTION_OFF = "\x1b[?1003l";
 
-type MouseTrackingState = "off" | "inline" | "buttons" | "full";
+type MouseTrackingState = "off" | "inline" | "full";
 
 /**
  * `PI_TUI_RESIZE_IN_PLACE=1|true` forces in-place resize (no alt-buffer borrow).
@@ -1226,21 +1218,15 @@ export class TUI extends Container {
 	/** Transition mouse reporting, emitting only the sequences a change needs. */
 	#setMouseTracking(state: MouseTrackingState): void {
 		if (state === this.#mouseTracking) return;
-		const previous = this.#mouseTracking;
+		const wasOff = this.#mouseTracking === "off";
 		this.#mouseTracking = state;
 		if (state === "off") {
-			if (previous !== "off") this.terminal.write(MOUSE_TRACKING_OFF);
+			if (!wasOff) this.terminal.write(MOUSE_TRACKING_OFF);
 			return;
 		}
-		if (previous === "off") {
-			this.terminal.write(state === "buttons" ? MOUSE_TRACKING_BUTTONS_ON : MOUSE_TRACKING_ON);
-			return;
-		}
-		// Both live states already report clicks, SGR coordinates, and the wheel; only
-		// any-motion differs, so a switch toggles that one mode.
-		const wantsMotion = state !== "buttons";
-		const hadMotion = previous !== "buttons";
-		if (wantsMotion !== hadMotion) this.terminal.write(wantsMotion ? MOUSE_MOTION_ON : MOUSE_MOTION_OFF);
+		// Inline and fullscreen reporting are the same bytes: moving between
+		// live modes needs no emission, only entering from off does.
+		if (wasOff) this.terminal.write(MOUSE_TRACKING_ON);
 	}
 
 	/** Check if an overlay entry is currently visible */
@@ -1789,7 +1775,9 @@ export class TUI extends Container {
 		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
 		this.#extractCursorMarkers(viewport);
 		// The borrowed resize buffer is transient, not a streamable session paint.
-		this.#emitAltFrame(this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height), width, height, false);
+		this.#emitAltFrame(this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height), width, height, {
+			notifyPaint: false,
+		});
 	}
 
 	/**
@@ -3056,12 +3044,13 @@ export class TUI extends Container {
 		const wantAlt = overlayAlt || providerAlt;
 		const wantMouse: MouseTrackingState =
 			topOverlay === undefined
-				? this.#inlineMouseProvider?.() === true
-					? providerAlt
-						? "full"
-						: "inline"
-					: providerAlt
-						? "buttons"
+				? providerAlt
+					? // The fullscreen main view owns the pointer for the session: wheel,
+						// hover, and clicks all work there without opt-in, because the
+						// alternate buffer already gives up native selection.
+						"full"
+					: this.#inlineMouseProvider?.() === true
+						? "inline"
 						: "off"
 				: overlayAlt && topOverlay.options?.mouseTracking !== false
 					? "full"
@@ -3583,7 +3572,7 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		this.#extractCursorMarkers(lines);
 		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height);
-		this.#emitAltFrame(prepared, width, height, true);
+		this.#emitAltFrame(prepared, width, height, { notifyPaint: true });
 	}
 
 	/**
@@ -3618,7 +3607,7 @@ export class TUI extends Container {
 				? null
 				: this.#targetHardwareCursorState({ row: Math.min(marker.row, height - 1), col: marker.col }, height);
 		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height);
-		this.#emitAltFrame(prepared, width, height, true, cursor);
+		this.#emitAltFrame(prepared, width, height, { notifyPaint: true, cursor, diffRows: true });
 		if (plan.history !== undefined) {
 			const accepted = plan.history.id > this.#acceptedHistoryBatchId;
 			if (accepted) this.#acceptedHistoryBatchId = plan.history.id;
@@ -3636,7 +3625,7 @@ export class TUI extends Container {
 
 	/**
 	 * Full per-row viewport rewrite on the alt buffer. Emits only sync-output
-	 * brackets, a cursor home, and per-row rewrites — never ED3 or any
+	 * brackets, row addressing, and per-row rewrites — never ED3 or any
 	 * native-scrollback byte. `cursor` positions and reveals the hardware cursor for
 	 * provider-owned frames; modal frames leave it hidden.
 	 */
@@ -3644,9 +3633,9 @@ export class TUI extends Container {
 		prepared: PreparedLines,
 		width: number,
 		height: number,
-		notifyPaint: boolean,
-		cursor: HardwareCursorState | null = null,
+		options: { notifyPaint: boolean; cursor?: HardwareCursorState | null; diffRows?: boolean },
 	): void {
+		const { notifyPaint, cursor = null, diffRows = false } = options;
 		// The pass that composed this frame ran with `altScreen`, so the normal
 		// screen's own placements behind it are not treated as retired.
 		this.#imageBudget.limitResidentImages();
@@ -3701,17 +3690,54 @@ export class TUI extends Container {
 				return;
 			}
 		}
-		let buffer = `${this.#paintBeginSequence}\x1b[H`;
-		for (let r = 0; r < height; r++) {
-			if (r > 0) buffer += "\n";
-			buffer += this.#lineRewriteSequence(
-				prepared.rows[r]!,
-				width,
-				r,
-				-1,
-				-1,
-				this.#osc66SpacerGlyphWidth(prepared.lines, r),
-			);
+		// Provider frames diff against the previous paint: scrolling moves a few rows
+		// and rewrites only those, where a whole-frame write re-emits every row — and
+		// through ConPTY's chunked writes that is a visibly slow frame.
+		const rowsToWrite: number[] = [];
+		if (diffRows && !force && this.#altPreviousLines.length === height) {
+			for (let r = 0; r < height; r++) {
+				const previous = this.#altPreparedRows[r];
+				const current = prepared.rows[r]!;
+				if (
+					prepared.lines[r] === this.#altPreviousLines[r] &&
+					previous !== undefined &&
+					previous.width === current.width &&
+					previous.widthEpoch === current.widthEpoch &&
+					previous.imageProtocol === current.imageProtocol
+				) {
+					continue;
+				}
+				rowsToWrite.push(r);
+			}
+		} else {
+			for (let r = 0; r < height; r++) rowsToWrite.push(r);
+		}
+		let buffer = `${this.#paintBeginSequence}`;
+		if (rowsToWrite.length === height) {
+			buffer += "\x1b[H";
+			for (let index = 0; index < rowsToWrite.length; index++) {
+				const row = rowsToWrite[index]!;
+				if (index > 0) buffer += "\n";
+				buffer += this.#lineRewriteSequence(
+					prepared.rows[row]!,
+					width,
+					row,
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(prepared.lines, row),
+				);
+			}
+		} else {
+			for (const row of rowsToWrite) {
+				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(
+					prepared.rows[row]!,
+					width,
+					row,
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(prepared.lines, row),
+				)}`;
+			}
 		}
 		if (cursor !== null) {
 			buffer += `\x1b[${cursor.row + 1};${cursor.col + 1}H${cursor.visible ? "\x1b[?25h" : "\x1b[?25l"}`;

@@ -11,10 +11,12 @@ const ESC = String.fromCharCode(27);
 // SGR click on viewport row 2 (1-based y=3): the pinned expander row when the
 // candidates below resolve it to the toggle sentinel.
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
-
-function makeHarness() {
+// SGR pointer motion (button 35) over the same row.
+const EXPANDER_HOVER = `${ESC}[<35;5;3M`;
+function makeHarness(options: { fullscreen?: boolean } = {}) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
+	const hovered: (string | undefined)[] = [];
 	let toggled = 0;
 	const ctx = {
 		ui: {
@@ -38,6 +40,15 @@ function makeHarness() {
 		session: {
 			extensionRunner: undefined,
 		},
+		composer: {
+			get fullscreen() {
+				return options.fullscreen === true;
+			},
+			setFullscreen: () => {},
+			scrollTranscript: () => {},
+			scrollTranscriptPage: () => {},
+			scrollToTranscriptTail: () => {},
+		},
 		resolveViewportClickCandidates: (index: number) => (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
 		focusedAgentId: undefined,
 		focusAgentSession: async (id: string) => {
@@ -47,15 +58,20 @@ function makeHarness() {
 			toggled++;
 		},
 		showStatus: () => {},
-		setClickHoverId: () => {},
+		setClickHoverId: (id: string | undefined) => {
+			hovered.push(id);
+		},
 	} as unknown as InteractiveModeContext;
 	const controller = new InputController(ctx);
 	controller.setupKeyHandlers();
+	const send = (data: string) => {
+		for (const listener of listeners) listener(data);
+	};
 	return {
-		click: () => {
-			for (const listener of listeners) listener(EXPANDER_CLICK);
-		},
+		click: () => send(EXPANDER_CLICK),
+		hover: () => send(EXPANDER_HOVER),
 		focused,
+		hovered,
 		toggled: () => toggled,
 	};
 }
@@ -91,5 +107,20 @@ describe("InputController click routing", () => {
 		h.click();
 		expect(h.toggled()).toBe(1);
 		expect(h.focused).toEqual([]);
+	});
+
+	it("hovers click targets in fullscreen even with tui.mouse off", () => {
+		settings.set("tui.mouse", false);
+		const h = makeHarness({ fullscreen: true });
+		h.hover();
+		expect(h.hovered).toEqual([PINNED_HUD_TOGGLE_ID]);
+		expect(h.focused).toEqual([]);
+	});
+
+	it("keeps hover inert inline while tui.mouse is off", () => {
+		settings.set("tui.mouse", false);
+		const h = makeHarness();
+		h.hover();
+		expect(h.hovered).toEqual([]);
 	});
 });

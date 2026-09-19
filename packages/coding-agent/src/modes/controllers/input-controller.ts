@@ -740,35 +740,33 @@ export class InputController {
 	}
 
 	/**
-	 * Main-view mouse routing. Inline (`tui.mouse`): left-clicks on live subagent
-	 * cards and HUD rows focus that agent in one action, and pointer motion lights
-	 * up the hover band on the target under the cursor. Fullscreen (`tui.screen`):
-	 * tracking is always on, so the wheel scrolls the in-app transcript and every
-	 * other report is swallowed instead of reaching the editor as typed input —
-	 * hover and clicks stay opt-in behind `tui.mouse`. Every routed report is
-	 * consumed, so button/wheel bytes never leak into the draft; clicks on chrome
+	 * Main-view mouse routing. Live subagent cards and HUD rows focus on left-click
+	 * and light up on hover; the wheel scrolls the fullscreen transcript. Inline
+	 * (`tui.mouse`) is opt-in for the normal buffer, where reporting would otherwise
+	 * cost native selection; the fullscreen main view owns the pointer for the
+	 * session, so all three work there without a second setting. Every routed report
+	 * is consumed, so button/wheel bytes never leak into the draft; clicks on chrome
 	 * simply swallow.
 	 */
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
 		if (!data.startsWith("\x1b[<")) return undefined;
-		const mouseCapture = settings.get("tui.mouse") === true;
+		const fullscreen = this.ctx.composer.fullscreen;
+		const pointerTargets = settings.get("tui.mouse") === true || fullscreen;
 		// Inline reports only arrive while `tui.mouse` owns tracking, but the
 		// fullscreen main view keeps them coming regardless, so its own state
 		// decides whether this handler is live.
-		if (!mouseCapture && !this.ctx.composer.fullscreen) return undefined;
+		if (!pointerTargets) return undefined;
 		if (this.ctx.ui.hasOverlay()) return undefined;
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
-		if (event.wheel !== null && this.ctx.composer.fullscreen) {
+		if (event.wheel !== null && fullscreen) {
 			// Wheel up (-1) reads toward older rows; the composer counts positive
 			// rows toward the top of the stream.
 			this.ctx.composer.scrollTranscript(-event.wheel * SCREEN_WHEEL_ROWS);
 			return { consume: true };
 		}
-		if (mouseCapture) {
-			if (event.motion) this.#updateHoverHighlight(event.row);
-			else if (event.leftClick) this.#focusClickedAgent(event.row);
-		}
+		if (event.motion) this.#updateHoverHighlight(event.row);
+		else if (event.leftClick) this.#focusClickedAgent(event.row);
 		return { consume: true };
 	}
 

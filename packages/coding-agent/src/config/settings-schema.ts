@@ -1142,7 +1142,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Mouse Click-to-Focus",
 			description:
-				"Capture mouse clicks in the main session so live subagent cards and HUD rows focus on click, with a hover highlight on the target. Native text selection becomes Shift+drag and wheel scroll becomes Shift+wheel while on",
+				"Capture mouse clicks in the main session so live subagent cards and HUD rows focus on click, with a hover highlight on the target. Native text selection becomes Shift+drag and wheel scroll becomes Shift+wheel while on. The fullscreen main view always captures the pointer, so it needs no opt-in",
 		},
 	},
 	"tui.screen": {
@@ -1154,7 +1154,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Fullscreen Main View",
 			description:
-				"Run the main session view on the alternate screen with an in-app scrollback. Terminal scrollback and native text selection do not apply; the wheel and clicks are always captured",
+				"Run the main session view on the alternate screen with an in-app scrollback. Terminal scrollback and native text selection do not apply; the wheel scrolls the transcript and live cards take clicks and hover",
 			options: [
 				{
 					value: "inline",

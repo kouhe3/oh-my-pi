@@ -48,6 +48,7 @@ app.history.search: []
 | `app.stt.toggle`             | Unbound (hold `Space`)                                                | Toggle speech-to-text. By default there is no key chord — hold the space bar to record (push-to-talk) and release to transcribe; bind a chord here for a press-to-toggle alternative |
 | `app.live.toggle`            | `Ctrl+L`                                                              | Start or stop live voice mode (same as `/live`)                                                                                                                                      |
 | `app.agents.hub`             | `Alt+A`                                                               | [Open the Agent Hub](./agent-hub.md)                                                                                                                                                 |
+| `app.screen.toggle`          | `Alt+F`                                                        | Toggle the fullscreen main view: alternate-screen session with an in-app transcript scrollback, wheel and Page/Home/End scrolling                                                    |
 
 ## Recover a cleared prompt
 

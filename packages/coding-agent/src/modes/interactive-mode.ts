@@ -1066,6 +1066,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
+	/**
+	 * Apply `tui.screen` to the composer: the inline view that retires rows into
+	 * terminal scrollback, or the fullscreen alt-screen main view whose
+	 * transcript scrolls in-app.
+	 */
+	applyScreenSetting(): void {
+		this.composer.setFullscreen(settings.get("tui.screen") === "fullscreen");
+	}
+
 	setClickHoverId(id: string | undefined): void {
 		this.composer.setHoveredClickId(id);
 	}
@@ -1531,6 +1540,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		]);
 		this.ui.setFocus(this.editor);
 		this.syncComposerShape();
+		// Arm alt-screen ownership before the first frame paints, so a fullscreen
+		// session never flashes a normal-buffer transcript on the way in.
+		this.applyScreenSetting();
 
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();

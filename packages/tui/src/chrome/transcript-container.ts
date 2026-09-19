@@ -92,6 +92,9 @@ type Offered =
 	| { batch: HistoryBatch; kind: "commit"; end: number }
 	| { batch: HistoryBatch; kind: "replay" };
 
+/** Rows the retained scrollback ledger keeps before dropping its oldest rows. */
+const LEDGER_MAX_ROWS = 20_000;
+
 const MAX_LIVE_BLOCKS = 256;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
@@ -164,6 +167,20 @@ export class TranscriptContainer extends Container {
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	/** Block spans of the last `renderViewport` output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
+	// Retained scrollback ledger (`setRetainedLedger`): rows the host keeps in memory
+	// instead of committing them to native scrollback. Rebuilt from the committed
+	// entries on a width change or when retention is enabled mid-session.
+	#retained = false;
+	#ledgerRows: string[] = [];
+	#ledgerOwners: (Component | undefined)[] = [];
+	#ledgerWidth = 0;
+	#ledgerDropped = 0;
+	#lastWindowMoreAbove = false;
+	#lastWindowOffset = 0;
+	/** Width the currently offered batch was rendered at, for ledger archiving. */
+	#offeredWidth: number | undefined;
+	/** Per-row owners of the offered batch's rows, so a windowed stream can hit-test them. */
+	#offeredOwners: (Component | undefined)[] = [];
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
@@ -197,6 +214,12 @@ export class TranscriptContainer extends Container {
 		this.#replayPending = false;
 		this.#replayRequested = false;
 		this.#lastViewportSpans = [];
+		this.#ledgerRows = [];
+		this.#ledgerOwners = [];
+		this.#ledgerWidth = 0;
+		this.#ledgerDropped = 0;
+		this.#lastWindowMoreAbove = false;
+		this.#offeredWidth = undefined;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -307,6 +330,83 @@ export class TranscriptContainer extends Container {
 	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
 	getLastViewportSpans(): readonly TranscriptViewportSpan[] {
 		return this.#lastViewportSpans;
+	}
+
+	/**
+	 * Retain acknowledged rows in memory instead of letting the host commit them to
+	 * native scrollback (`tui.screen: fullscreen`). {@link renderWindow} then serves
+	 * them back as a scroll stream. Enabling rebuilds from the committed entries at
+	 * the next window render; disabling drops the ledger.
+	 */
+	setRetainedLedger(enabled: boolean): void {
+		if (this.#retained === enabled) return;
+		this.#retained = enabled;
+		this.#ledgerRows = [];
+		this.#ledgerOwners = [];
+		this.#ledgerWidth = 0;
+		this.#ledgerDropped = 0;
+	}
+
+	/** Rows the retained ledger dropped from its head to stay bounded. */
+	droppedLedgerRows(): number {
+		return this.#ledgerDropped;
+	}
+
+	/** Whether the last {@link renderWindow} left retained rows above the window. */
+	lastWindowHasMoreAbove(): boolean {
+		return this.#lastWindowMoreAbove;
+	}
+
+	/** Offset the last {@link renderWindow} actually applied, after clamping at the top. */
+	lastWindowOffset(): number {
+		return this.#lastWindowOffset;
+	}
+
+	/**
+	 * Render a window of the retained scroll stream — committed ledger rows, any
+	 * offered-but-unacknowledged append rows, then the complete live tail — positioned
+	 * `offsetFromBottom` rows above the newest row. Spans are committed exactly like
+	 * {@link renderViewport}, so click targets stay live while the reader is scrolled.
+	 */
+	renderWindow(width: number, rows: number, offsetFromBottom: number, frame: AnimationFrame): readonly string[] {
+		this.#lastFrame = frame;
+		this.#syncEntries();
+		this.#settleFinalized();
+		const capacity = Math.max(0, Math.trunc(rows));
+		const offset = Math.max(0, Math.trunc(offsetFromBottom));
+		this.#ensureLedger(width);
+		const offered = this.#offered;
+		// Rows of a pending offer are not in the ledger yet (the host has not
+		// acknowledged them) and are excluded from the live walk, so the window has to
+		// carry them or a scrollback-free stream would lose a block for a frame.
+		const pendingOffer = offered !== undefined && offered.kind !== "replay" ? offered : undefined;
+		const live = this.#renderLiveFull(width, frame);
+		const ledgerEnd = this.#ledgerRows.length;
+		const offeredEnd = ledgerEnd + (pendingOffer?.batch.rows.length ?? 0);
+		const total = offeredEnd + live.rows.length;
+		const clamped = Math.min(offset, Math.max(0, total - capacity));
+		const end = total - clamped;
+		const start = Math.max(0, end - capacity);
+		const windowRows: string[] = [];
+		const owners: (Component | undefined)[] = [];
+		for (let index = start; index < end; index++) {
+			if (index < ledgerEnd) {
+				windowRows.push(this.#ledgerRows[index]!);
+				owners.push(this.#ledgerOwners[index]);
+			} else if (index < offeredEnd) {
+				const offeredIndex = index - ledgerEnd;
+				windowRows.push(pendingOffer!.batch.rows[offeredIndex]!);
+				owners.push(this.#offeredOwners[offeredIndex]);
+			} else {
+				const liveIndex = index - offeredEnd;
+				windowRows.push(live.rows[liveIndex]!);
+				owners.push(live.owners[liveIndex]);
+			}
+		}
+		this.#lastWindowOffset = clamped;
+		this.#lastWindowMoreAbove = start > 0;
+		this.#commitViewportSpans(owners, windowRows.length);
+		return windowRows;
 	}
 
 	/** Collapse a per-line owner list into run-length block spans, clamped to `length`. */
@@ -435,6 +535,8 @@ export class TranscriptContainer extends Container {
 		if (rows.length === 0) return undefined;
 		const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "replay" };
 		this.#offered = { batch, kind: "replay" };
+		this.#offeredWidth = width;
+		this.#offeredOwners = [];
 		return batch;
 	}
 
@@ -532,6 +634,8 @@ export class TranscriptContainer extends Container {
 					kind: "append",
 				};
 				this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
+				this.#offeredWidth = width;
+				this.#offeredOwners = batch.rows.map(() => this.#entries[this.#frontier]?.component);
 				this.#pinnedFrontier = undefined;
 				return batch;
 			}
@@ -556,12 +660,15 @@ export class TranscriptContainer extends Container {
 			return undefined;
 		}
 		this.#pinnedFrontier = undefined;
+		const committed = this.#rangeRowsWithOwners(this.#frontier, end, width, true);
 		const batch: HistoryBatch = {
 			id: this.#nextBatchId++,
-			rows: this.#renderRange(this.#frontier, end, width, true),
+			rows: committed.rows,
 			kind: "append",
 		};
 		this.#offered = { batch, end, kind: "commit" };
+		this.#offeredWidth = width;
+		this.#offeredOwners = committed.owners;
 		return batch;
 	}
 
@@ -569,6 +676,7 @@ export class TranscriptContainer extends Container {
 	acknowledgeFinalizedBatch(id: number): void {
 		const offered = this.#offered;
 		if (offered === undefined || offered.batch.id !== id) return;
+		if (this.#retained) this.#archiveAcked(offered);
 		if (offered.kind === "append") {
 			const entry = this.#entries[offered.entry];
 			// The offered end must still extend this entry's emitted prefix: a
@@ -731,6 +839,120 @@ export class TranscriptContainer extends Container {
 			mode: entry.mode,
 			liveBlocks: this.#liveCount(),
 		});
+	}
+
+	/**
+	 * Rows and per-row owners for an entry range, mirroring {@link #renderRange} so a
+	 * rebuilt ledger is byte-identical to what the host retired. Only the range head is
+	 * sliced by its emitted stable prefix; every other entry renders whole.
+	 */
+	#rangeRowsWithOwners(
+		start: number,
+		end: number,
+		width: number,
+		trailingBlank: boolean,
+	): { rows: string[]; owners: (Component | undefined)[] } {
+		const rows: string[] = [];
+		const owners: (Component | undefined)[] = [];
+		for (let index = start; index < end; index++) {
+			const entry = this.#entries[index]!;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const rendered =
+				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
+			const emittedRows = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
+			const block = rendered.slice(emittedRows);
+			if (block.length === 0) continue;
+			if (rows.length > 0) {
+				rows.push("");
+				owners.push(undefined);
+			}
+			for (const row of block) {
+				rows.push(row);
+				owners.push(entry.component);
+			}
+		}
+		if (trailingBlank && rows.length > 0) {
+			rows.push("");
+			owners.push(undefined);
+		}
+		return { rows, owners };
+	}
+
+	/**
+	 * Rebuild the ledger for `width` from the committed entries. Retirement keeps every
+	 * committed component alive on `children`, so a width change (or enabling retention
+	 * mid-session) recomposes the same rows the host used to commit to native scrollback.
+	 */
+	#ensureLedger(width: number): void {
+		if (!this.#retained || this.#ledgerWidth === width) return;
+		const { rows, owners } = this.#rangeRowsWithOwners(0, this.#frontier, width, true);
+		this.#ledgerRows = rows;
+		this.#ledgerOwners = owners;
+		this.#ledgerWidth = width;
+		this.#ledgerDropped = 0;
+		this.#trimLedger();
+	}
+
+	/**
+	 * Archive an acknowledged batch. Rows that landed at a width the ledger no longer
+	 * holds (a resize between offer and ack) invalidate the ledger instead of appending
+	 * mismatched rows: the next window render rebuilds it from the committed entries.
+	 */
+	#archiveAcked(offered: Offered): void {
+		if (offered.kind === "replay") return;
+		if (this.#ledgerWidth === 0 || this.#offeredWidth !== this.#ledgerWidth) {
+			this.#ledgerWidth = 0;
+			return;
+		}
+		if (offered.kind === "append") {
+			const entry = this.#entries[offered.entry];
+			if (entry === undefined) {
+				this.#ledgerWidth = 0;
+				return;
+			}
+			for (const row of offered.batch.rows) {
+				this.#ledgerRows.push(row);
+				this.#ledgerOwners.push(entry.component);
+			}
+			this.#trimLedger();
+			return;
+		}
+		const { rows, owners } = this.#rangeRowsWithOwners(this.#frontier, offered.end, this.#ledgerWidth, true);
+		this.#ledgerRows.push(...rows);
+		this.#ledgerOwners.push(...owners);
+		this.#trimLedger();
+	}
+
+	#trimLedger(): void {
+		const excess = this.#ledgerRows.length - LEDGER_MAX_ROWS;
+		if (excess <= 0) return;
+		this.#ledgerRows.splice(0, excess);
+		this.#ledgerOwners.splice(0, excess);
+		this.#ledgerDropped += excess;
+	}
+
+	/**
+	 * Every live block's rows at full allocation, with per-row owners. The window render
+	 * composes this after the ledger instead of {@link renderViewport}'s compactor: a
+	 * scroll stream must not reflow rows the reader is looking at.
+	 */
+	#renderLiveFull(width: number, frame: AnimationFrame): { rows: string[]; owners: (Component | undefined)[] } {
+		const rows: string[] = [];
+		const owners: (Component | undefined)[] = [];
+		for (const { entry, index } of this.#liveEntries()) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
+			const block = this.#renderEntry(entry, width).slice(this.#projectedEmittedRowCount(entry, index, width));
+			if (block.length === 0) continue;
+			if (rows.length > 0) {
+				rows.push("");
+				owners.push(undefined);
+			}
+			for (const row of block) {
+				rows.push(row);
+				owners.push(entry.component);
+			}
+		}
+		return { rows, owners };
 	}
 
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {

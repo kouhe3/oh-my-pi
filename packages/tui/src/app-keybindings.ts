@@ -62,6 +62,7 @@ interface AppKeybindings {
 	"app.history.search": true;
 	"app.stt.toggle": true;
 	"app.live.toggle": true;
+	"app.screen.toggle": true;
 }
 
 /** Application action identifier registered alongside the base TUI keybindings. */
@@ -244,6 +245,10 @@ export const KEYBINDINGS = {
 	"app.live.toggle": {
 		defaultKeys: "ctrl+l",
 		description: "Start or stop live voice mode (/live)",
+	},
+	"app.screen.toggle": {
+		defaultKeys: "alt+f",
+		description: "Toggle the fullscreen main view",
 	},
 } as const satisfies KeybindingDefinitions;
 

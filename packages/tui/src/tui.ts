@@ -94,8 +94,16 @@ const PAINT_END_NO_SYNC = ENABLE_AUTOWRAP;
 // native text selection.
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
+/**
+ * Click + wheel reporting without any-motion: the persistent alt main view needs
+ * button and wheel events to scroll, but hover reporting (?1003) stays tied to
+ * `tui.mouse` so a scrollback-free reader keeps a quiet input stream.
+ */
+const MOUSE_TRACKING_BUTTONS_ON = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_MOTION_ON = "\x1b[?1003h";
+const MOUSE_MOTION_OFF = "\x1b[?1003l";
 
-type MouseTrackingState = "off" | "inline" | "full";
+type MouseTrackingState = "off" | "inline" | "buttons" | "full";
 
 /**
  * `PI_TUI_RESIZE_IN_PLACE=1|true` forces in-place resize (no alt-buffer borrow).
@@ -882,6 +890,12 @@ export class TUI extends Container {
 	// untouched, so exiting reconciles cleanly against the terminal-restored
 	// normal screen. #altPreviousLines is the last alt frame, for repaint-skip.
 	#altActive = false;
+	/**
+	 * Persistent alt-screen main view (`tui.screen: fullscreen`): the provider owns the
+	 * alternate buffer for the session, so its frame is painted there instead of into
+	 * normal-buffer scrollback. Fullscreen overlays still stack above it.
+	 */
+	#persistentAlt = false;
 	#mouseTracking: MouseTrackingState = "off";
 	/** Product-owned probe for opt-in normal-buffer click capture (`tui.mouse`). Read every frame. */
 	#inlineMouseProvider: (() => boolean) | undefined;
@@ -1166,7 +1180,6 @@ export class TUI extends Container {
 	 */
 	getMutableViewport(): { top: number; length: number } {
 		if (
-			this.#altActive ||
 			this.#resizeAltActive ||
 			this.#resizeProbe !== undefined ||
 			this.#resizeInPlaceActive ||
@@ -1174,7 +1187,30 @@ export class TUI extends Container {
 		) {
 			return { top: 0, length: 0 };
 		}
+		if (this.#altActive) {
+			// A persistent alt main view paints the provider frame from screen row 0, so
+			// inline click targets keep their geometry; a modal frame owns the display and
+			// its rows must not hit-test against stale transcript spans.
+			const modal = this.#getTopmostVisibleOverlay();
+			if (modal !== undefined) return { top: 0, length: 0 };
+			return this.#persistentAlt ? { top: 0, length: this.#providerWindow.length } : { top: 0, length: 0 };
+		}
 		return { top: this.#providerViewportTop - this.#providerViewportPadTop, length: this.#providerWindow.length };
+	}
+
+	/**
+	 * Opt into a session-lifetime alternate screen owned by the frame provider
+	 * (`tui.screen: fullscreen`). The provider's frame is painted on the alt buffer,
+	 * its offered history batches are acknowledged without being written (the host
+	 * retains those rows), and fullscreen overlays keep stacking above it. Leaving the
+	 * mode restores the normal buffer exactly as it was at entry.
+	 */
+	setPersistentAltScreen(enabled: boolean): void {
+		if (this.#persistentAlt === enabled) return;
+		this.#persistentAlt = enabled;
+		this.#altPreviousLines = [];
+		this.#altPreparedRows = [];
+		this.requestRender();
 	}
 
 	/**
@@ -1190,15 +1226,21 @@ export class TUI extends Container {
 	/** Transition mouse reporting, emitting only the sequences a change needs. */
 	#setMouseTracking(state: MouseTrackingState): void {
 		if (state === this.#mouseTracking) return;
-		const wasOff = this.#mouseTracking === "off";
+		const previous = this.#mouseTracking;
 		this.#mouseTracking = state;
 		if (state === "off") {
-			if (!wasOff) this.terminal.write(MOUSE_TRACKING_OFF);
+			if (previous !== "off") this.terminal.write(MOUSE_TRACKING_OFF);
 			return;
 		}
-		// Inline and fullscreen reporting are the same bytes: moving between
-		// live modes needs no emission, only entering from off does.
-		if (wasOff) this.terminal.write(MOUSE_TRACKING_ON);
+		if (previous === "off") {
+			this.terminal.write(state === "buttons" ? MOUSE_TRACKING_BUTTONS_ON : MOUSE_TRACKING_ON);
+			return;
+		}
+		// Both live states already report clicks, SGR coordinates, and the wheel; only
+		// any-motion differs, so a switch toggles that one mode.
+		const wantsMotion = state !== "buttons";
+		const hadMotion = previous !== "buttons";
+		if (wantsMotion !== hadMotion) this.terminal.write(wantsMotion ? MOUSE_MOTION_ON : MOUSE_MOTION_OFF);
 	}
 
 	/** Check if an overlay entry is currently visible */
@@ -1923,6 +1965,9 @@ export class TUI extends Container {
 	 * transcript's visible graphics on the way out.
 	 */
 	#flushHistoryBeforeStop(): void {
+		// A fullscreen session's rows live in the host's in-memory ledger, not in native
+		// scrollback, so there is nothing to flush and no buffer to flush it into.
+		if (this.#persistentAlt) return;
 		const provider = this.#frameProvider;
 		if (provider?.beginHistoryFlush === undefined) return;
 		const width = this.terminal.columns;
@@ -2021,7 +2066,10 @@ export class TUI extends Container {
 		// enough; emitting `\r\n` would create an extra blank row. If the content
 		// already reaches the viewport bottom, scroll exactly once so the prompt
 		// lands directly below the last visible TUI row.
-		if (this.#previousFrameLength > 0) {
+		// A provider-owned alt session leaves the normal screen untouched for its whole
+		// life, so there is no viewport to anchor the shell prompt under: the terminal
+		// restores the pre-session screen and its cursor is where the user left it.
+		if (this.#previousFrameLength > 0 && !this.#persistentAlt) {
 			// Provider frames anchor the mutable viewport below retained history;
 			// the shell prompt belongs on the first row after that content.
 			const targetRow = this.#providerViewportTop + this.#previousFrameLength;
@@ -2999,16 +3047,23 @@ export class TUI extends Container {
 		}
 
 		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
-		// requests it, borrow the terminal's alternate buffer and paint only the
-		// modal there; the normal screen and all accounting stay untouched.
+		// requests it — or the provider owns the alt buffer for the session
+		// (`tui.screen: fullscreen`) — the frame is painted on the alternate buffer
+		// and the normal screen's accounting stays untouched.
 		const topOverlay = this.#getTopmostVisibleOverlay();
-		const wantAlt = topOverlay?.options?.fullscreen === true;
+		const overlayAlt = topOverlay?.options?.fullscreen === true;
+		const providerAlt = this.#persistentAlt && topOverlay === undefined;
+		const wantAlt = overlayAlt || providerAlt;
 		const wantMouse: MouseTrackingState =
 			topOverlay === undefined
 				? this.#inlineMouseProvider?.() === true
-					? "inline"
-					: "off"
-				: wantAlt && topOverlay.options?.mouseTracking !== false
+					? providerAlt
+						? "full"
+						: "inline"
+					: providerAlt
+						? "buttons"
+						: "off"
+				: overlayAlt && topOverlay.options?.mouseTracking !== false
 					? "full"
 					: "off";
 		if (wantAlt && !this.#altActive) {
@@ -3071,7 +3126,8 @@ export class TUI extends Container {
 			this.#setMouseTracking(wantMouse);
 		}
 		if (this.#altActive) {
-			this.#renderAltFrame(width, height);
+			if (providerAlt) this.#renderPersistentAltFrame(width, height);
+			else this.#renderAltFrame(width, height);
 			return;
 		}
 		// #prepareResizeReplay can latch this frame's reset itself (a settled
@@ -3531,11 +3587,66 @@ export class TUI extends Container {
 	}
 
 	/**
+	 * Provider-owned alt frame (`tui.screen: fullscreen`): the composer's plan fills the
+	 * screen from row 0, the hardware cursor lands where the plan's marker sits, and any
+	 * offered history batch is acknowledged without being written — the alternate buffer
+	 * has no scrollback, so the host retains those rows in memory instead.
+	 */
+	#renderPersistentAltFrame(width: number, height: number): void {
+		const provider = this.#frameProvider;
+		if (!provider || width <= 0 || height <= 0) return;
+		this.#debugNextWindowTop = 0;
+		let plan: TerminalFramePlan;
+		let lines: string[];
+		do {
+			this.#imageBudget.beginPass(false, true);
+			plan = provider.renderFrame({ columns: width, rows: height });
+			lines = Array.from(plan.viewport);
+			if (lines.length > height) {
+				const message = `Frame provider returned ${lines.length} rows for a ${height}-row viewport`;
+				if (Bun.env.NODE_ENV === "test" || Bun.env.NODE_ENV === "development") throw new Error(message);
+				logger.error("TUI layout contract violated", { rows: lines.length, height });
+				lines = lines.slice(0, height);
+			}
+			// Screen rows are top-anchored here, so a short viewport pads at the bottom.
+			while (lines.length < height) lines.push("");
+			lines = this.#compositeOverlaysIntoWindow(lines, width, height);
+		} while (this.#imageBudget.endPass());
+		const marker = this.#extractCursorMarkers(lines)[0];
+		const cursor =
+			marker === undefined
+				? null
+				: this.#targetHardwareCursorState({ row: Math.min(marker.row, height - 1), col: marker.col }, height);
+		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height);
+		this.#emitAltFrame(prepared, width, height, true, cursor);
+		if (plan.history !== undefined) {
+			const accepted = plan.history.id > this.#acceptedHistoryBatchId;
+			if (accepted) this.#acceptedHistoryBatchId = plan.history.id;
+			provider.acknowledgeHistory(plan.history.id);
+			// Retirement may hold another ordered batch; the host's ledger is the only
+			// place those rows go, so pump exactly like the normal-buffer path does.
+			if (accepted && plan.history.kind !== "replay") this.requestRender();
+		}
+		this.#providerWindow = prepared.lines;
+		this.#providerPreparedRows = prepared.rows;
+		this.#providerViewportTop = 0;
+		this.#providerViewportPadTop = 0;
+		this.#previousFrameLength = prepared.lines.length;
+	}
+
+	/**
 	 * Full per-row viewport rewrite on the alt buffer. Emits only sync-output
 	 * brackets, a cursor home, and per-row rewrites — never ED3 or any
-	 * native-scrollback byte. The hardware cursor stays hidden here.
+	 * native-scrollback byte. `cursor` positions and reveals the hardware cursor for
+	 * provider-owned frames; modal frames leave it hidden.
 	 */
-	#emitAltFrame(prepared: PreparedLines, width: number, height: number, notifyPaint: boolean): void {
+	#emitAltFrame(
+		prepared: PreparedLines,
+		width: number,
+		height: number,
+		notifyPaint: boolean,
+		cursor: HardwareCursorState | null = null,
+	): void {
 		// The pass that composed this frame ran with `altScreen`, so the normal
 		// screen's own placements behind it are not treated as retired.
 		this.#imageBudget.limitResidentImages();
@@ -3558,10 +3669,17 @@ export class TUI extends Container {
 		// Skip an identical repaint (the modal is mostly static between
 		// keystrokes) — unless a forced repaint (resetDisplay,
 		// requestRender(true)) is pending: the redraw gesture must repair a
-		// corrupted modal even when our cached frame is byte-identical.
+		// corrupted modal even when our cached frame is byte-identical. A moved
+		// caret is not part of the row bytes, so it also forces the paint.
 		const force = this.#forceViewportRepaintOnNextRender;
 		this.#forceViewportRepaintOnNextRender = false;
-		if (!force && this.#altPreviousLines.length === height) {
+		const cursorMoved =
+			cursor !== null &&
+			(this.#hardwareCursorState === null ||
+				this.#hardwareCursorState.row !== cursor.row ||
+				this.#hardwareCursorState.col !== cursor.col ||
+				this.#hardwareCursorState.visible !== cursor.visible);
+		if (!force && !cursorMoved && this.#altPreviousLines.length === height) {
 			let same = true;
 			for (let r = 0; r < height; r++) {
 				const previous = this.#altPreparedRows[r];
@@ -3595,8 +3713,13 @@ export class TUI extends Container {
 				this.#osc66SpacerGlyphWidth(prepared.lines, r),
 			);
 		}
+		if (cursor !== null) {
+			buffer += `\x1b[${cursor.row + 1};${cursor.col + 1}H${cursor.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
+		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		if (cursor === null) this.#recordHardwareCursorHidden();
+		else this.#recordHardwareCursorState(cursor);
 		this.#altPreviousLines = prepared.lines;
 		this.#altPreparedRows = prepared.rows;
 		this.#debugPaint = { lines: prepared.lines, windowTop: 0, altScreen: true };

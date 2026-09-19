@@ -8,6 +8,7 @@ import {
 	type PasteOptions,
 	type SlashCommand,
 } from "@oh-my-pi/pi-tui";
+import { matchesSelectPageDown, matchesSelectPageUp } from "@oh-my-pi/pi-tui/keybinding-matchers";
 import { isEnoent, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
@@ -179,6 +180,9 @@ const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
 // deliberate human double-tap is always tens of milliseconds apart.
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
+
+/** Transcript rows one wheel notch scrolls in the fullscreen main view. */
+const SCREEN_WHEEL_ROWS = 3;
 
 export class InputController {
 	constructor(
@@ -368,6 +372,43 @@ export class InputController {
 					}
 					this.toggleToolActivityVisibility();
 					return { consume: true };
+				}
+				if (this.ctx.keybindings.matches(data, "app.screen.toggle")) {
+					if (this.ctx.ui.hasOverlay()) return undefined;
+					const enabled = !this.ctx.composer.fullscreen;
+					this.ctx.composer.setFullscreen(enabled);
+					this.ctx.showStatus(`Fullscreen view: ${enabled ? "on" : "off"}`);
+					return { consume: true };
+				}
+				// Fullscreen owns the transcript as an in-app scroll stream, so the
+				// reader's Page/Home/End keys move it instead of the editor cursor.
+				// An empty editor and the main surface keep them; a draft or any
+				// overlay (whose own scroller rebinds them) keeps them too.
+				if (
+					this.ctx.composer.fullscreen &&
+					!this.ctx.ui.hasOverlay() &&
+					this.ctx.ui.getFocused() === this.ctx.editor &&
+					this.ctx.editor.getText().trim() === ""
+				) {
+					// `scrollTranscriptPage` reads toward older rows for -1, the tail for 1.
+					if (matchesSelectPageUp(data)) {
+						this.ctx.composer.scrollTranscriptPage(-1);
+						return { consume: true };
+					}
+					if (matchesSelectPageDown(data)) {
+						this.ctx.composer.scrollTranscriptPage(1);
+						return { consume: true };
+					}
+					if (matchesKey(data, "end") || matchesKey(data, "ctrl+end")) {
+						this.ctx.composer.scrollToTranscriptTail();
+						return { consume: true };
+					}
+					if (matchesKey(data, "home") || matchesKey(data, "ctrl+home")) {
+						// The container clamps the window to the top of the stream, and the
+						// composer mirrors that offset back, so an over-scroll is safe.
+						this.ctx.composer.scrollTranscript(Number.MAX_SAFE_INTEGER);
+						return { consume: true };
+					}
 				}
 				return undefined;
 			});
@@ -699,20 +740,35 @@ export class InputController {
 	}
 
 	/**
-	 * Inline click-to-focus (`tui.mouse`): left-clicks on live subagent cards
-	 * and HUD rows focus that agent in one action, and pointer motion lights up
-	 * the hover band on the target under the cursor. Every SGR report is consumed
-	 * while inline tracking owns the terminal so button/wheel bytes never reach
-	 * the editor as typed input; clicks on chrome simply swallow.
+	 * Main-view mouse routing. Inline (`tui.mouse`): left-clicks on live subagent
+	 * cards and HUD rows focus that agent in one action, and pointer motion lights
+	 * up the hover band on the target under the cursor. Fullscreen (`tui.screen`):
+	 * tracking is always on, so the wheel scrolls the in-app transcript and every
+	 * other report is swallowed instead of reaching the editor as typed input —
+	 * hover and clicks stay opt-in behind `tui.mouse`. Every routed report is
+	 * consumed, so button/wheel bytes never leak into the draft; clicks on chrome
+	 * simply swallow.
 	 */
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
 		if (!data.startsWith("\x1b[<")) return undefined;
-		if (!settings.get("tui.mouse")) return undefined;
+		const mouseCapture = settings.get("tui.mouse") === true;
+		// Inline reports only arrive while `tui.mouse` owns tracking, but the
+		// fullscreen main view keeps them coming regardless, so its own state
+		// decides whether this handler is live.
+		if (!mouseCapture && !this.ctx.composer.fullscreen) return undefined;
 		if (this.ctx.ui.hasOverlay()) return undefined;
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
-		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick) this.#focusClickedAgent(event.row);
+		if (event.wheel !== null && this.ctx.composer.fullscreen) {
+			// Wheel up (-1) reads toward older rows; the composer counts positive
+			// rows toward the top of the stream.
+			this.ctx.composer.scrollTranscript(-event.wheel * SCREEN_WHEEL_ROWS);
+			return { consume: true };
+		}
+		if (mouseCapture) {
+			if (event.motion) this.#updateHoverHighlight(event.row);
+			else if (event.leftClick) this.#focusClickedAgent(event.row);
+		}
 		return { consume: true };
 	}
 

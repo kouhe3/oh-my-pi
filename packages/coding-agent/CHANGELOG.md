@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `tui.screen: fullscreen`: run the main session view on the alternate screen with an in-app transcript scrollback — the wheel, PageUp/PageDown, and Home/End scroll it — and `Alt+F` (`app.screen.toggle`) to switch views without restarting.
+
 ## [18.2.6] - 2026-09-18
 
 ### Fixed

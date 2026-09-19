@@ -266,6 +266,17 @@ export class Composer implements TerminalFrameProvider {
 	#started = false;
 	#stopped = false;
 	#transferred = false;
+	// Persistent alt-screen main view (`tui.screen: fullscreen`): the transcript
+	// renders as an in-app scroll stream over the container's retained ledger
+	// instead of retiring rows into terminal scrollback.
+	#fullscreen = false;
+	/** Rows scrolled above the newest row; 0 follows new content. */
+	#scrollOffset = 0;
+	#lastWindowRows = 1;
+	#lastWindowMoreAbove = false;
+	/** Rows painted above the transcript window inside the fullscreen slot (hint + top padding). */
+	#fullscreenBodyOffset = 0;
+	#droppedLedgerRows = 0;
 
 	constructor(options: ComposerOptions = {}) {
 		ensureThemeSync();
@@ -411,7 +422,15 @@ export class Composer implements TerminalFrameProvider {
 		// inter-block blanks) engages only when a block genuinely cannot retire.
 		// Rows the transient chrome peak displaces are clipped from the top by
 		// the `drop` slice below, which is what scrollback would have done.
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
+		// Fullscreen instead slices the retained scroll stream: the slot is exactly
+		// what the transcript may paint, so `drop` stays zero and row geometry is
+		// stable while the reader scrolls.
+		const slot = this.#fullscreen
+			? Math.max(0, rows - before.length - after.length)
+			: Math.max(0, rows - before.length - belowFloor);
+		const active = this.#fullscreen
+			? this.#renderFullscreenBody(transcript, width, slot, frame)
+			: transcript.renderViewport(width, slot, frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
 			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
@@ -433,7 +452,10 @@ export class Composer implements TerminalFrameProvider {
 				spans.push({ start: clamped, end, candidates: (local: number) => span.candidates(local + skew) });
 			}
 		};
-		for (const span of activeSpans) shift(span, before.length - drop);
+		// Fullscreen prefixes the slot with its scroll hint and pads above it, so window
+		// spans sit that much lower in the viewport; inline rows start at the slot top.
+		const activeBase = this.#fullscreen ? this.#fullscreenBodyOffset : 0;
+		for (const span of activeSpans) shift(span, before.length + activeBase - drop);
 		for (const span of afterSpans) shift(span, before.length + active.length - drop);
 		this.#lastClickSpans = spans;
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
@@ -467,6 +489,51 @@ export class Composer implements TerminalFrameProvider {
 			return line;
 		});
 		return banded ? painted : viewport;
+	}
+
+	/**
+	 * Compose the fullscreen transcript slot: the windowed scroll stream plus, while
+	 * scrolled, a hint row naming how far above the tail the reader is. The slot is
+	 * always filled so the frame keeps an exact terminal height.
+	 */
+	#renderFullscreenBody(
+		transcript: TranscriptContainer,
+		width: number,
+		slot: number,
+		frame: AnimationFrame,
+	): readonly string[] {
+		if (slot <= 0) {
+			this.#fullscreenBodyOffset = 0;
+			return [];
+		}
+		const hint = this.#scrollOffset > 0;
+		const body = transcript.renderWindow(width, Math.max(0, slot - (hint ? 1 : 0)), this.#scrollOffset, frame);
+		// The container clamps at the top of the stream; mirror what it applied so the
+		// hint cannot claim a scroll position the window is not showing.
+		this.#scrollOffset = transcript.lastWindowOffset();
+		this.#lastWindowMoreAbove = transcript.lastWindowHasMoreAbove();
+		this.#droppedLedgerRows = transcript.droppedLedgerRows();
+		this.#lastWindowRows = Math.max(1, slot);
+		const rows: string[] = [];
+		if (hint) {
+			const dropped = this.#droppedLedgerRows > 0 ? ` (${this.#droppedLedgerRows} dropped)` : "";
+			rows.push(
+				truncateToWidth(theme.fg("dim", `⇡ ${this.#scrollOffset} rows above${dropped} — End for latest`), width),
+			);
+		}
+		const filler = Math.max(0, slot - rows.length - body.length);
+		// Bottom-aligned while following the tail (the editor keeps its place on a fresh
+		// session); top-aligned once the reader has reached the very top of the stream.
+		const padBelow = this.#scrollOffset > 0 && !this.#lastWindowMoreAbove;
+		// Window spans are published in slot coordinates, so everything painted above
+		// them — the hint row and any top padding — shifts them down in the viewport.
+		this.#fullscreenBodyOffset = rows.length + (padBelow ? 0 : filler);
+		// oxlint-disable-next-line unicorn/no-new-array -- slot-length blank rows
+		if (filler > 0 && !padBelow) rows.push(...new Array<string>(filler).fill(""));
+		rows.push(...body);
+		// oxlint-disable-next-line unicorn/no-new-array -- slot-length blank rows
+		if (filler > 0 && padBelow) rows.push(...new Array<string>(filler).fill(""));
+		return rows;
 	}
 
 	/**
@@ -724,6 +791,57 @@ export class Composer implements TerminalFrameProvider {
 		return this.#started && !this.#stopped;
 	}
 
+	/** Whether the main view owns the alternate screen for this session. */
+	get fullscreen(): boolean {
+		return this.#fullscreen;
+	}
+
+	/**
+	 * Switch the main view between the normal buffer (transcript rows retire into
+	 * terminal scrollback) and a session-lifetime alternate screen whose transcript is
+	 * an in-app scroll stream backed by the container's retained ledger.
+	 */
+	setFullscreen(enabled: boolean): void {
+		if (this.#stopped || this.#fullscreen === enabled) return;
+		this.#fullscreen = enabled;
+		this.#scrollOffset = 0;
+		this.#lastWindowMoreAbove = false;
+		for (const child of this.#runtimeChildren) {
+			if (child instanceof TranscriptContainer) child.setRetainedLedger(enabled);
+		}
+		this.ui.setPersistentAltScreen(enabled);
+		this.ui.requestRender(true);
+	}
+
+	/** Scroll the transcript window: positive counts toward older rows, negative toward the tail. */
+	scrollTranscript(rows: number): void {
+		if (!this.#fullscreen || rows === 0) return;
+		this.#scrollOffset = Math.max(0, this.#scrollOffset + Math.trunc(rows));
+		this.ui.requestRender();
+	}
+
+	/** Scroll one window minus its two context rows; -1 reads older rows, 1 newer. */
+	scrollTranscriptPage(direction: -1 | 1): void {
+		// `scrollTranscript` counts positive rows toward the top of the stream.
+		this.scrollTranscript(-direction * Math.max(1, this.#lastWindowRows - 2));
+	}
+
+	/** Follow new content again. */
+	scrollToTranscriptTail(): void {
+		if (this.#scrollOffset === 0) return;
+		this.#scrollOffset = 0;
+		this.ui.requestRender();
+	}
+
+	/** Current transcript scroll state, as of the last rendered frame. */
+	getTranscriptScroll(): { offset: number; hasMoreAbove: boolean; droppedRows: number } {
+		return {
+			offset: this.#scrollOffset,
+			hasMoreAbove: this.#lastWindowMoreAbove,
+			droppedRows: this.#droppedLedgerRows,
+		};
+	}
+
 	/** Start terminal ownership and optionally begin the welcome intro. */
 	start(options: ComposerStartOptions = {}): void {
 		if (this.#started || this.#stopped) return;
@@ -858,7 +976,14 @@ export class Composer implements TerminalFrameProvider {
 			this.#runtimeMounted = true;
 		}
 		this.#runtimeChildren = children;
-		for (const child of children) this.ui.addChild(child);
+		// A remount is a different conversation (session switch, fork, /clear): the
+		// previous stream's scroll position must not address the new one.
+		this.#scrollOffset = 0;
+		this.#lastWindowMoreAbove = false;
+		for (const child of children) {
+			if (child instanceof TranscriptContainer) child.setRetainedLedger(this.#fullscreen);
+			this.ui.addChild(child);
+		}
 		this.ui.addChild(this.#statusHost);
 		this.ui.requestRender();
 	}

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a persistent alternate-screen main view to the composer: `Composer.setFullscreen` moves the session transcript onto the alternate buffer as an in-app scroll stream (`scrollTranscript`, `scrollTranscriptPage`, `scrollToTranscriptTail`) with always-on wheel and click reports, while inline click-to-focus geometry keeps working.
+
 ## [18.2.5] - 2026-09-17
 
 ### Added

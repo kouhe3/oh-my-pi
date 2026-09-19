@@ -42,6 +42,7 @@ import type { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-mark
 import type { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import type { ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import type { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import type { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import type { RecentSession } from "@oh-my-pi/pi-tui/prompt/welcome";
 import type { EventController } from "./controllers/event-controller";
 import type { LoopConditionConfig, LoopLimitRuntime } from "@oh-my-pi/pi-tui/status-line/loop";
@@ -105,6 +106,8 @@ export interface AgentHubOpenOptions {
 
 export interface InteractiveModeContext {
 	// UI access
+	/** Canonical composer: owns the TUI, the editor, and the fullscreen main view. */
+	composer: Composer;
 	ui: TUI;
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
@@ -150,6 +153,8 @@ export interface InteractiveModeContext {
 	togglePinnedHudExpanded(): void;
 	/** Rebuild the pinned jump list for a `display.pinnedAgents` change. */
 	applyPinnedAgentsSetting(): void;
+	/** Apply `tui.screen`: the inline scrollback view or the fullscreen main view. */
+	applyScreenSetting(): void;
 	/** Point the inline hover band at a click-candidate id (or clear it). */
 	setClickHoverId(id: string | undefined): void;
 	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */

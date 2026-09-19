@@ -1145,6 +1145,30 @@ export const SETTINGS_SCHEMA = {
 				"Capture mouse clicks in the main session so live subagent cards and HUD rows focus on click, with a hover highlight on the target. Native text selection becomes Shift+drag and wheel scroll becomes Shift+wheel while on",
 		},
 	},
+	"tui.screen": {
+		type: "enum",
+		values: ["inline", "fullscreen"] as const,
+		default: "inline",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Fullscreen Main View",
+			description:
+				"Run the main session view on the alternate screen with an in-app scrollback. Terminal scrollback and native text selection do not apply; the wheel and clicks are always captured",
+			options: [
+				{
+					value: "inline",
+					label: "Inline",
+					description: "Retire settled transcript rows into the terminal's own scrollback",
+				},
+				{
+					value: "fullscreen",
+					label: "Fullscreen",
+					description: "Keep the transcript in-app, scrolled by the wheel, PageUp/PageDown, and Home/End",
+				},
+			],
+		},
+	},
 	"tui.tight": {
 		type: "boolean",
 		default: false,

@@ -56,6 +56,27 @@ current width; open Markdown and the current partial suffix remain mutable. Unde
 only the current logical head can emit one such row without finalizing. Final
 retirement writes only its un-emitted suffix.
 
+### Provider-owned alternate screen
+
+`TUI.setPersistentAltScreen(true)` lets the provider own the terminal's alternate
+buffer for a whole session (the coding agent's `tui.screen: fullscreen`). While it
+is on and no fullscreen overlay is visible:
+
+- the provider's `viewport` is painted on the alternate screen from row 0, with the
+  hardware cursor following the frame's `CURSOR_MARKER`;
+- offered history batches are acknowledged **without being written**. The alternate
+  buffer has no scrollback, so the provider retains those rows in memory — the
+  coding agent's `TranscriptContainer` keeps them in a ledger behind its in-app
+  scroll window (`renderWindow`), which is why retirement stays in charge of the
+  live block set;
+- mouse tracking reports clicks and the wheel regardless of `tui.mouse`, which only
+  adds any-motion hover reporting;
+- `getMutableViewport()` keeps returning the painted window, so inline click
+  targets and the hover band behave exactly as on the normal buffer;
+- fullscreen overlays still stack above the session frame. Opening or closing one
+  neither enters nor exits the alternate buffer, and leaving the mode restores the
+  normal screen exactly as it was at entry.
+
 ## 2. Rendering a frame
 
 For every frame the TUI:

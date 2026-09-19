@@ -701,6 +701,14 @@ export class ToolExecutionComponent extends Container {
 		return taskCardAgentIds(this.#result?.details);
 	}
 
+	/**
+	 * Pointer click on this card's rows: toggle its output preview. Same state Ctrl+O
+	 * sets globally, so a click and the key stay interchangeable (`TranscriptClickBlock`).
+	 */
+	handleTranscriptClick(): void {
+		this.setExpanded(!this.#expanded);
+	}
+
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
 	}

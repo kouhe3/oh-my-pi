@@ -783,14 +783,19 @@ export class InputController {
 		this.ctx.ui.requestRender();
 	}
 
-	// Candidates under a screen row, or none when the published viewport is
-	// empty (resize transactions) or the row falls outside it: routing stale
-	// spans would highlight or focus an unrelated agent from old rows.
-	#viewportCandidates(screenRow: number): string[] {
+	// Row inside the published viewport, or undefined when it is empty (resize
+	// transactions) or the row falls outside it: routing stale spans would
+	// highlight or focus an unrelated agent from old rows.
+	#localViewportRow(screenRow: number): number | undefined {
 		const viewport = this.ctx.ui.getMutableViewport();
 		const local = screenRow - viewport.top;
-		if (viewport.length === 0 || local < 0 || local >= viewport.length) return [];
-		return this.ctx.resolveViewportClickCandidates(local);
+		return viewport.length === 0 || local < 0 || local >= viewport.length ? undefined : local;
+	}
+
+	/** Candidate subagent ids under a screen row. */
+	#viewportCandidates(screenRow: number): string[] {
+		const local = this.#localViewportRow(screenRow);
+		return local === undefined ? [] : this.ctx.resolveViewportClickCandidates(local);
 	}
 
 	/**
@@ -804,9 +809,14 @@ export class InputController {
 	}
 
 	#focusClickedAgent(screenRow: number): void {
-		const candidates = this.#viewportCandidates(screenRow);
-		if (candidates.length === 0) return;
+		const local = this.#localViewportRow(screenRow);
+		if (local === undefined) return;
+		// Component-owned targets (tool cards toggle their own preview) handle the click
+		// before agent focus and the HUD expander see it.
+		if (this.ctx.composer.clickViewportTarget(local)) return;
 		const refs = AgentRegistry.global().list();
+		const candidates = this.ctx.resolveViewportClickCandidates(local);
+		if (candidates.length === 0) return;
 		const scoped = refs.filter(ref => candidates.includes(ref.id));
 		// A live agent wins over the expander sentinel: task names are
 		// user-controlled, so an agent id can equal the toggle id. The toggle

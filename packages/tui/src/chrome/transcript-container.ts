@@ -13,6 +13,21 @@ export interface TranscriptPresentationTarget {
 	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
 }
 
+/**
+ * Lets a block react to a pointer click on its own transcript rows: the composer
+ * publishes the block as a click target for the rows it paints and routes the click
+ * back through {@link handleTranscriptClick} (tool cards toggle their output preview).
+ * Blocks without it stay non-interactive.
+ */
+export interface TranscriptClickBlock {
+	handleTranscriptClick(): void;
+}
+
+/** Whether a component takes pointer clicks on its own rows. */
+export function isTranscriptClickBlock(component: Component): component is Component & TranscriptClickBlock {
+	return typeof (component as Partial<TranscriptClickBlock>).handleTranscriptClick === "function";
+}
+
 /** Presentation declaration captured permanently when a block is added. */
 export type TranscriptBlockMode = "mutable" | "appendOnly";
 

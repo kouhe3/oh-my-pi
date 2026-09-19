@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added component-owned pointer targets to the composer's click routing: a transcript block implementing `handleTranscriptClick` becomes hoverable and clickable on its own rows, and tool cards use it to toggle their output preview.
 - Added a persistent alternate-screen main view to the composer: `Composer.setFullscreen` moves the session transcript onto the alternate buffer as an in-app scroll stream (`scrollTranscript`, `scrollTranscriptPage`, `scrollToTranscriptTail`) with always-on wheel, click, and hover reporting and diffed row painting, while inline click-to-focus geometry keeps working.
 
 ## [18.2.5] - 2026-09-17

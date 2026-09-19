@@ -15,7 +15,12 @@ import {
 import { sliceWithWidth, truncateToWidth, visibleWidth } from "../utils";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
-import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
+import {
+	type AnimationFrame,
+	isTranscriptClickBlock,
+	TranscriptContainer,
+	type TranscriptClickBlock,
+} from "../chrome/transcript-container";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
 
@@ -248,6 +253,22 @@ export class Composer implements TerminalFrameProvider {
 	#lastClickSpans: ViewportClickSpan[] = [];
 	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
 	#hoveredClickId: string | undefined;
+	// Component-owned click targets of the last frame, keyed by the synthetic id their
+	// spans publish. Rebuilt every frame so a target that left the window drops out.
+	#clickTargets = new Map<string, TranscriptClickBlock>();
+	#clickTargetIds = new WeakMap<Component, string>();
+	#clickTargetSeq = 0;
+
+	/** Stable synthetic id for a component-owned click target (never an agent id). */
+	#clickTargetId(component: Component): string {
+		let id = this.#clickTargetIds.get(component);
+		if (id === undefined) {
+			this.#clickTargetSeq += 1;
+			id = `@omp:transcript-block:${this.#clickTargetSeq}`;
+			this.#clickTargetIds.set(component, id);
+		}
+		return id;
+	}
 	// Hard-row prefix currently above the native viewport. The first resize
 	// frame may pull part of it down before the normal buffer is borrowed.
 	#retiredHeaderStart = 0;
@@ -432,10 +453,20 @@ export class Composer implements TerminalFrameProvider {
 			? this.#renderFullscreenBody(transcript, width, slot, frame)
 			: transcript.renderViewport(width, slot, frame);
 		const activeSpans: ViewportClickSpan[] = [];
+		this.#clickTargets.clear();
 		for (const span of transcript.getLastViewportSpans()) {
-			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
-			if (!ids || ids.length === 0) continue;
-			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
+			const component = span.component;
+			// Agent-focus candidates win: a task card stays a jump-to-agent target and
+			// keeps its id-anchored band.
+			const ids = (component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
+			if (ids && ids.length > 0) {
+				activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
+				continue;
+			}
+			if (!isTranscriptClickBlock(component)) continue;
+			const id = this.#clickTargetId(component);
+			this.#clickTargets.set(id, component);
+			activeSpans.push({ start: span.start, end: span.end, candidates: () => [id] });
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
 		const mutable = [...before, ...active, ...after].slice(drop);
@@ -543,6 +574,21 @@ export class Composer implements TerminalFrameProvider {
 	 */
 	viewportClickCandidates(index: number): string[] {
 		return routeViewportClick(this.#lastClickSpans, index);
+	}
+
+	/**
+	 * Dispatch a viewport click to a component-owned target (a tool card toggling its
+	 * output preview, say). Returns false when the row carries no such target, so the
+	 * host's agent-focus and HUD routing still runs.
+	 */
+	clickViewportTarget(index: number): boolean {
+		const block = this.#clickTargets.get(routeViewportClick(this.#lastClickSpans, index)[0] ?? "");
+		if (block === undefined) return false;
+		block.handleTranscriptClick();
+		// The block re-presented itself, height included: repaint the whole viewport
+		// rather than let the incremental diff miss reflowed rows.
+		this.ui.requestRender(true);
+		return true;
 	}
 
 	/**

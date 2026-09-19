@@ -59,6 +59,34 @@ class ClickableBlock implements Component {
 	}
 }
 
+/** Block that toggles its own presentation on a pointer click. */
+class ToggleBlock implements Component {
+	toggles = 0;
+	constructor(private readonly rows: readonly string[]) {}
+	isTranscriptBlockFinalized(): boolean {
+		return false;
+	}
+	render(): readonly string[] {
+		return this.rows;
+	}
+	handleTranscriptClick(): void {
+		this.toggles += 1;
+	}
+}
+
+/** Both an agent target and a click target: agent focus must win. */
+class ClickableToggleBlock extends ToggleBlock {
+	constructor(
+		rows: readonly string[],
+		private readonly ids: readonly string[],
+	) {
+		super(rows);
+	}
+	getClickFocusAgentIds(): string[] {
+		return [...this.ids];
+	}
+}
+
 describe("composer hover band", () => {
 	beforeAll(() => {
 		initTheme();
@@ -110,6 +138,59 @@ describe("composer hover band", () => {
 			expect(banded).toHaveLength(1);
 			expect(banded[0]).toContain(`${esc}[48`);
 			expect(banded[0]).not.toContain("48;2;15;18;22");
+		} finally {
+			composer.stop();
+		}
+	});
+});
+
+describe("composer component click targets", () => {
+	beforeAll(() => {
+		initTheme();
+	});
+
+	function renderWith(blocks: readonly Component[]): { composer: Composer; term: VirtualTerminal } {
+		const term = new VirtualTerminal(80, 24);
+		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
+		composer.start();
+		const transcript = new TranscriptContainer();
+		for (const block of blocks) transcript.addChild(block);
+		composer.setRuntimeChildren([transcript]);
+		composer.renderFrame({ columns: 80, rows: 24 });
+		return { composer, term };
+	}
+
+	it("publishes the block as a click target and dispatches the click", () => {
+		const block = new ToggleBlock(["card one", "card two"]);
+		const { composer } = renderWith([block]);
+		try {
+			const candidates = composer.viewportClickCandidates(0);
+			expect(candidates).toHaveLength(1);
+			expect(candidates[0]!.startsWith("@omp:transcript-block:")).toBe(true);
+
+			expect(composer.clickViewportTarget(1)).toBe(true);
+			expect(block.toggles).toBe(1);
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("keeps agent focus ahead of the block's own click", () => {
+		const block = new ClickableToggleBlock(["card one"], ["AgentA"]);
+		const { composer } = renderWith([block]);
+		try {
+			expect(composer.viewportClickCandidates(0)).toEqual(["AgentA"]);
+			expect(composer.clickViewportTarget(0)).toBe(false);
+			expect(block.toggles).toBe(0);
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("reports no target for rows without one", () => {
+		const { composer } = renderWith([new ToggleBlock(["card one"])]);
+		try {
+			expect(composer.clickViewportTarget(20)).toBe(false);
 		} finally {
 			composer.stop();
 		}

@@ -76,6 +76,8 @@ The list stays short: it shows a few rows plus an expander (`display.pinnedAgent
 
 Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. A click focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Hovering a live target lights it up first, so you can see what a click will open.
 
+Tool cards are pointer targets too: hovering one bands its rows and clicking toggles its output preview, the same state `Ctrl+O` sets for the whole transcript. Like the agent targets above, that needs `tui.mouse` on the normal buffer and works unconditionally in the [fullscreen main view](./settings.md).
+
 Only rows currently in the live viewport are clickable — retired transcript rows live in terminal scrollback, where clicks cannot map back to content. Enabling capture changes terminal gestures while on: text selection becomes Shift+drag and wheel scroll becomes Shift+wheel. Off by default.
 
 ## Persisted agents and advisors

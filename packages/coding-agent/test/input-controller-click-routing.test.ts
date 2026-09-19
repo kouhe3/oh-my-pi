@@ -13,7 +13,7 @@ const ESC = String.fromCharCode(27);
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
 // SGR pointer motion (button 35) over the same row.
 const EXPANDER_HOVER = `${ESC}[<35;5;3M`;
-function makeHarness(options: { fullscreen?: boolean } = {}) {
+function makeHarness(options: { fullscreen?: boolean; blockClick?: boolean } = {}) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
 	const hovered: (string | undefined)[] = [];
@@ -47,6 +47,7 @@ function makeHarness(options: { fullscreen?: boolean } = {}) {
 			setFullscreen: () => {},
 			scrollTranscript: () => {},
 			scrollTranscriptPage: () => {},
+			clickViewportTarget: () => options.blockClick === true,
 			scrollToTranscriptTail: () => {},
 		},
 		resolveViewportClickCandidates: (index: number) => (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
@@ -122,5 +123,12 @@ describe("InputController click routing", () => {
 		const h = makeHarness();
 		h.hover();
 		expect(h.hovered).toEqual([]);
+	});
+
+	it("lets a component-owned click target handle the click first", () => {
+		const h = makeHarness({ blockClick: true });
+		h.click();
+		expect(h.focused).toEqual([]);
+		expect(h.toggled()).toBe(0);
 	});
 });

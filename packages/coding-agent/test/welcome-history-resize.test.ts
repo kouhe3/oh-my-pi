@@ -384,7 +384,8 @@ describe("composer welcome native-history resize", () => {
 		const composer = new Composer({
 			terminal,
 			tuiOptions: { renderScheduler: scheduler },
-			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+			// Capacity retirement: a roomy transcript stays live until shutdown.
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true, transcriptCommit: "capacity" },
 		});
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new WidthTranscriptBlock(1));
@@ -441,7 +442,13 @@ describe("composer welcome native-history resize", () => {
 				terminal,
 				tuiOptions: { renderScheduler: scheduler },
 				welcome: { version: "test", modelName: "test-model", providerName: "test-provider" },
-				preferences: { ...COMPOSER_DEFAULTS, quiet: false, resizeScrollback: "preserve" },
+				// Capacity retirement: fitting blocks must stay in the viewport.
+				preferences: {
+					...COMPOSER_DEFAULTS,
+					quiet: false,
+					resizeScrollback: "preserve",
+					transcriptCommit: "capacity",
+				},
 			});
 			const transcript = new TranscriptContainer();
 			const tail = new MutableComposerTail();

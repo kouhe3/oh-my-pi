@@ -21,6 +21,14 @@ import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
 
+/**
+ * When a finalized transcript block retires into terminal history:
+ * `settle` commits each block the moment it can no longer change (ordinary CLI
+ * output), `capacity` keeps blocks live — reflowing to the current width on
+ * resize — until the live viewport runs out of room.
+ */
+export type TranscriptCommitMode = "capacity" | "settle";
+
 /** Live settings that affect the composer before and after session adoption. */
 export interface ComposerPreferences {
 	readonly quiet: boolean;
@@ -28,6 +36,7 @@ export interface ComposerPreferences {
 	readonly showHardwareCursor: boolean;
 	readonly maxInlineImages: number;
 	readonly resizeScrollback: ResizeScrollbackMode;
+	readonly transcriptCommit: TranscriptCommitMode;
 	readonly imeSafeCursor: boolean;
 	readonly autocompleteMaxVisible: number;
 	readonly spellingTypoDetection: boolean;
@@ -42,6 +51,7 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	resizeScrollback: "rebuild",
+	transcriptCommit: "settle",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,
@@ -606,11 +616,15 @@ export class Composer implements TerminalFrameProvider {
 			const welcome = this.#welcome;
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
 			// The header stays live viewport chrome until the screen fills; then it
-			// retires first so transcript prefixes can follow in order.
+			// retires first so transcript prefixes can follow in order. A settled
+			// prefix retires it even while the screen has room: `settle` cannot
+			// commit behind a live header, so the header must not pin it.
 			const renderedHeader = this.#header.render(width);
 			if (renderedHeader.length > 0) {
 				const liveRows = transcript.liveRowCount(width);
-				if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
+				const eagerPending = this.#preferences.transcriptCommit === "settle" && transcript.hasSettledPrefix();
+				if (!this.#historyFlush && !eagerPending && renderedHeader.length + chromeRows + liveRows <= rows)
+					return undefined;
 				this.#offeredHistory = {
 					id: this.#nextHistoryId++,
 					rows: [...renderedHeader, ""],
@@ -628,7 +642,9 @@ export class Composer implements TerminalFrameProvider {
 		}
 		const batch = this.#historyFlush
 			? transcript.peekFlushBatch(width)
-			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
+			: this.#preferences.transcriptCommit === "settle"
+				? transcript.peekSettledBatch(width)
+				: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,

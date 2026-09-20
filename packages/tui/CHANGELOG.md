@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `tui.transcriptCommit: settle`, which retires each transcript block into terminal history the moment it finalizes instead of waiting for the live viewport to overflow. `TranscriptContainer.peekSettledBatch()` serves that prefix regardless of capacity, and the composer retires the welcome header ahead of it so a settled prefix can never be pinned behind live chrome.
+- Added `TranscriptContainer.debugState()`, exposing per-block lifecycle, retirement mode, emitted stable rows, and the committed frontier through the TUI debug socket's `values` operation.
+
 ## [18.2.5] - 2026-09-17
 
 ### Added

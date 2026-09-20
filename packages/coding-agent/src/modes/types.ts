@@ -126,6 +126,7 @@ export interface InteractiveModeContext {
 	statusLine: StatusLineComponent;
 	syncComposerShape(): void;
 	syncEditorSpelling(): void;
+	syncTranscriptCommit(): void;
 
 	// Session access
 	session: AgentSession;

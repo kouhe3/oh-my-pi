@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `tui.transcriptCommit` setting (default `settle`): finalized transcript blocks commit into terminal scrollback as soon as they can no longer change, so the latest message is in terminal history the moment it is printed — matching ordinary CLI output, and reachable from terminal-native scroll, search, and copy. `capacity` restores the previous behavior, where blocks stay live (and reflow on resize) until the screen runs out of room. Committed rows are immutable, so tool-card expansion and other post-finalize re-presentation only apply to blocks that have not retired yet.
+
 ## [18.2.6] - 2026-09-18
 
 ### Fixed

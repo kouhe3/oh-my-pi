@@ -36,7 +36,9 @@ function makeHarness(): Harness {
 	const composer = new Composer({
 		terminal,
 		tuiOptions: { renderScheduler: scheduler },
-		preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		// This suite pins the capacity-retirement path (#11007): rows retire only
+		// under viewport pressure, and a later chrome shrink must not strand them.
+		preferences: { ...COMPOSER_DEFAULTS, quiet: true, transcriptCommit: "capacity" },
 	});
 	const transcript = new TranscriptContainer();
 	for (let i = 0; i < TRANSCRIPT_ROWS; i++) {

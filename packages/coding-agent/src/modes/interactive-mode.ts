@@ -1147,6 +1147,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			resizeScrollback: settings.get("tui.resizeScrollback"),
+			transcriptCommit: settings.get("tui.transcriptCommit"),
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
@@ -2648,6 +2649,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorBorderColor();
 		this.#persistComposerStatus();
 		this.ui.requestRender();
+	}
+
+	/** Apply the transcript retirement timing to the live composer. */
+	syncTranscriptCommit(): void {
+		this.composer.setPreferences({ transcriptCommit: this.settings.get("tui.transcriptCommit") });
 	}
 
 	/**

@@ -187,6 +187,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	const showHardwareCursor = field(rawPreferences, "showHardwareCursor");
 	const maxInlineImages = field(rawPreferences, "maxInlineImages");
 	const resizeScrollback = field(rawPreferences, "resizeScrollback");
+	const transcriptCommit = field(rawPreferences, "transcriptCommit");
 	const imeSafeCursor = field(rawPreferences, "imeSafeCursor");
 	const autocompleteMaxVisible = field(rawPreferences, "autocompleteMaxVisible");
 	const spellingTypoDetection = field(rawPreferences, "spellingTypoDetection");
@@ -201,6 +202,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 			resizeScrollback !== "append" &&
 			resizeScrollback !== "rebuild" &&
 			resizeScrollback !== "preserve") ||
+		(transcriptCommit !== undefined && transcriptCommit !== "capacity" && transcriptCommit !== "settle") ||
 		typeof imeSafeCursor !== "boolean" ||
 		typeof autocompleteMaxVisible !== "number" ||
 		typeof spellingTypoDetection !== "boolean" ||
@@ -234,6 +236,8 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback
 					: "rebuild",
+			transcriptCommit:
+				transcriptCommit === "capacity" || transcriptCommit === "settle" ? transcriptCommit : "settle",
 			imeSafeCursor,
 			autocompleteMaxVisible,
 			spellingTypoDetection,

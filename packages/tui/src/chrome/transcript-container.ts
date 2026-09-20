@@ -86,7 +86,7 @@ interface TranscriptEntry {
 	stableFrozen: boolean;
 }
 
-type RetirementPolicy = "pressure" | "flush";
+type RetirementPolicy = "pressure" | "flush" | "settled";
 type Offered =
 	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number }
 	| { batch: HistoryBatch; kind: "commit"; end: number }
@@ -265,6 +265,16 @@ export class TranscriptContainer extends Container {
 		return this.#entries.map(entry => entry.emitted);
 	}
 
+	/** Debug-socket state: per-block lifecycle, retirement mode, emitted stable rows, frontier. */
+	debugState(): Record<string, unknown> {
+		return {
+			blocks: this.blockStates(),
+			modes: this.blockModes(),
+			emitted: this.emittedStableRows(),
+			frontier: this.#frontier,
+		};
+	}
+
 	/** Whether visible active capacity and live-block memory permit another admission. */
 	canAdmit(rows: number): boolean {
 		const active = this.#entries.filter(entry => entry.state === "active").length;
@@ -416,6 +426,26 @@ export class TranscriptContainer extends Container {
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */
 	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {
 		return this.#peekBatch(width, capacity, "pressure");
+	}
+
+	/**
+	 * Offers the settled prefix as soon as it finalizes, regardless of viewport
+	 * pressure (`tui.transcriptCommit: settle`). Eligibility matches
+	 * {@link peekFlushBatch} without the shutdown-only contract: rows leave the live
+	 * viewport the moment their block can no longer change, so terminal history
+	 * carries the conversation like ordinary CLI output. Retired rows are immutable
+	 * — a committed block cannot re-present itself (tool expansion, late images)
+	 * until a replay.
+	 */
+	peekSettledBatch(width: number): HistoryBatch | undefined {
+		return this.#peekBatch(width, 0, "settled");
+	}
+
+	/** Whether the settled prefix has rows waiting to retire (no batch offered). */
+	hasSettledPrefix(): boolean {
+		this.#syncEntries();
+		this.#settleFinalized();
+		return this.#entries[this.#frontier]?.state === "settled";
 	}
 
 	/** Returns only a prepared complete replay, never a normal retirement offer. */

@@ -1035,6 +1035,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.transcriptCommit": {
+		type: "enum",
+		values: ["settle", "capacity"] as const,
+		default: "settle",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Transcript Commit",
+			description: "When a finalized transcript block retires into terminal scrollback",
+			options: [
+				{
+					value: "settle",
+					label: "On Finalize",
+					description: "Commit each block as soon as it can no longer change — ordinary CLI output",
+				},
+				{
+					value: "capacity",
+					label: "On Overflow",
+					description: "Keep blocks live, reflowing on resize, until the screen runs out of room",
+				},
+			],
+		},
+	},
+
 	"terminal.showProgress": {
 		type: "boolean",
 		default: false,
